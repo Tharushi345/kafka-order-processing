@@ -10,12 +10,19 @@ from config import BOOTSTRAP_SERVERS, ORDERS_TOPIC
 from schema_utils import load_schema
 
 
-PRODUCTS = [
+NORMAL_PRODUCTS = [
     "Item1",
     "Item2",
     "Item3",
     "Item4",
     "Item5",
+]
+
+DEMO_PRODUCTS = [
+    "Item1",
+    "TemporaryItem",
+    "Item2",
+    "Item3",
 ]
 
 
@@ -43,21 +50,25 @@ def delivery_report(err, msg):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Produce Avro serialized order messages to Kafka."
+        description="Produce Avro serialized order messages."
     )
 
     parser.add_argument(
         "--count",
         type=int,
         default=10,
-        help="Number of orders to produce.",
     )
 
     parser.add_argument(
         "--interval",
         type=float,
         default=1.0,
-        help="Delay between messages in seconds.",
+    )
+
+    parser.add_argument(
+        "--demo-retries",
+        action="store_true",
+        help="Generate TemporaryItem orders to demonstrate retry handling.",
     )
 
     args = parser.parse_args()
@@ -70,11 +81,17 @@ def main():
         }
     )
 
+    products = (
+        DEMO_PRODUCTS
+        if args.demo_retries
+        else NORMAL_PRODUCTS
+    )
+
     for i in range(args.count):
 
         order = {
             "orderId": str(1001 + i),
-            "product": random.choice(PRODUCTS),
+            "product": products[i % len(products)],
             "price": round(
                 random.uniform(10.0, 500.0),
                 2,

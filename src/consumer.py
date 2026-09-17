@@ -1,15 +1,23 @@
 import io
+import time
 
-from confluent_kafka import Consumer
-from fastavro import schemaless_reader
+from confluent_kafka import Consumer, Producer
+from fastavro import schemaless_reader, schemaless_writer
 
 from config import (
     BOOTSTRAP_SERVERS,
     CONSUMER_GROUP,
+    MAX_RETRIES,
     ORDERS_TOPIC,
+    RETRY_BACKOFF_SECONDS,
+    RETRY_TOPIC,
 )
 
 from schema_utils import load_schema
+
+
+class TemporaryProcessingError(Exception):
+    pass
 
 
 def deserialize_order(data, schema):
@@ -19,6 +27,53 @@ def deserialize_order(data, schema):
         buffer,
         schema,
     )
+
+
+def serialize_order(order, schema):
+    buffer = io.BytesIO()
+
+    schemaless_writer(
+        buffer,
+        schema,
+        order,
+    )
+
+    return buffer.getvalue()
+
+
+def get_retry_count(headers):
+    if not headers:
+        return 0
+
+    for key, value in headers:
+
+        if key == "retry_count":
+
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+
+            return int(value)
+
+    return 0
+
+
+def process_order(order, retry_count):
+
+    # Simulated temporary error.
+    #
+    # TemporaryItem fails on:
+    # attempt 0
+    # retry 1
+    #
+    # It succeeds on retry 2.
+
+    if (
+        order["product"] == "TemporaryItem"
+        and retry_count < 2
+    ):
+        raise TemporaryProcessingError(
+            "Simulated temporary service failure."
+        )
 
 
 def main():
@@ -34,14 +89,27 @@ def main():
         }
     )
 
+    retry_producer = Producer(
+        {
+            "bootstrap.servers": BOOTSTRAP_SERVERS
+        }
+    )
+
     consumer.subscribe(
-        [ORDERS_TOPIC]
+        [
+            ORDERS_TOPIC,
+            RETRY_TOPIC,
+        ]
     )
 
     total_price = 0.0
     order_count = 0
 
-    print(f"Listening for orders on topic: {ORDERS_TOPIC}")
+    print(
+        f"Listening on: "
+        f"{ORDERS_TOPIC}, {RETRY_TOPIC}"
+    )
+
     print("Press Ctrl+C to stop.")
     print()
 
@@ -65,39 +133,133 @@ def main():
                 schema,
             )
 
-            order_count += 1
-
-            total_price += float(
-                order["price"]
+            retry_count = get_retry_count(
+                msg.headers()
             )
 
-            running_average = (
-                total_price / order_count
-            )
+            try:
 
-            print(
-                f"Received Order: "
-                f"orderId={order['orderId']}, "
-                f"product={order['product']}, "
-                f"price={order['price']:.2f}"
-            )
+                process_order(
+                    order,
+                    retry_count,
+                )
 
-            print(
-                f"Running Average: "
-                f"{running_average:.2f}"
-            )
+                # -------------------------
+                # Successful processing
+                # -------------------------
 
-            print(
-                f"Orders Processed: "
-                f"{order_count}"
-            )
+                order_count += 1
 
-            print("-" * 50)
+                total_price += float(
+                    order["price"]
+                )
 
-            consumer.commit(
-                message=msg,
-                asynchronous=False,
-            )
+                running_average = (
+                    total_price / order_count
+                )
+
+                print(
+                    f"SUCCESS | "
+                    f"orderId={order['orderId']} | "
+                    f"product={order['product']} | "
+                    f"price={order['price']:.2f} | "
+                    f"retry={retry_count}"
+                )
+
+                print(
+                    f"Running Average = "
+                    f"{running_average:.2f}"
+                )
+
+                print(
+                    f"Orders Processed = "
+                    f"{order_count}"
+                )
+
+                print("-" * 60)
+
+                consumer.commit(
+                    message=msg,
+                    asynchronous=False,
+                )
+
+            except TemporaryProcessingError as exc:
+
+                next_retry = retry_count + 1
+
+                print(
+                    f"TEMPORARY FAILURE | "
+                    f"orderId={order['orderId']} | "
+                    f"retry={next_retry}/{MAX_RETRIES}"
+                )
+
+                print(
+                    f"Reason: {exc}"
+                )
+
+                if next_retry <= MAX_RETRIES:
+
+                    delay = (
+                        RETRY_BACKOFF_SECONDS
+                        * next_retry
+                    )
+
+                    print(
+                        f"Waiting {delay} seconds "
+                        f"before retry..."
+                    )
+
+                    time.sleep(delay)
+
+                    avro_data = serialize_order(
+                        order,
+                        schema,
+                    )
+
+                    retry_producer.produce(
+                        topic=RETRY_TOPIC,
+                        key=order["orderId"],
+                        value=avro_data,
+                        headers=[
+                            (
+                                "retry_count",
+                                str(next_retry).encode(
+                                    "utf-8"
+                                ),
+                            )
+                        ],
+                    )
+
+                    retry_producer.flush()
+
+                    print(
+                        f"RETRY SENT -> "
+                        f"{RETRY_TOPIC} | "
+                        f"orderId={order['orderId']} | "
+                        f"retry={next_retry}"
+                    )
+
+                else:
+
+                    print(
+                        f"RETRIES EXHAUSTED | "
+                        f"orderId={order['orderId']}"
+                    )
+
+                    print(
+                        "DLQ handling will be "
+                        "added in the next stage."
+                    )
+
+                print("-" * 60)
+
+                # Commit only after the retry copy
+                # has successfully been produced.
+
+                consumer.commit(
+                    message=msg,
+                    asynchronous=False,
+                )
 
     except KeyboardInterrupt:
 
@@ -106,6 +268,8 @@ def main():
     finally:
 
         consumer.close()
+
+        retry_producer.flush()
 
 
 if __name__ == "__main__":
