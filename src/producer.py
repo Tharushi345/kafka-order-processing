@@ -18,23 +18,25 @@ NORMAL_PRODUCTS = [
     "Item5",
 ]
 
-DEMO_PRODUCTS = [
+RETRY_DEMO_PRODUCTS = [
     "Item1",
     "TemporaryItem",
     "Item2",
     "Item3",
 ]
 
+ERROR_DEMO_PRODUCTS = [
+    "Item1",
+    "TemporaryItem",
+    "Item2",
+    "InvalidItem",
+    "Item3",
+]
+
 
 def serialize_order(order, schema):
     buffer = io.BytesIO()
-
-    schemaless_writer(
-        buffer,
-        schema,
-        order,
-    )
-
+    schemaless_writer(buffer, schema, order)
     return buffer.getvalue()
 
 
@@ -49,6 +51,7 @@ def delivery_report(err, msg):
 
 
 def main():
+
     parser = argparse.ArgumentParser(
         description="Produce Avro serialized order messages."
     )
@@ -68,7 +71,12 @@ def main():
     parser.add_argument(
         "--demo-retries",
         action="store_true",
-        help="Generate TemporaryItem orders to demonstrate retry handling.",
+    )
+
+    parser.add_argument(
+        "--demo-errors",
+        action="store_true",
+        help="Generate temporary and permanent failure examples.",
     )
 
     args = parser.parse_args()
@@ -81,11 +89,12 @@ def main():
         }
     )
 
-    products = (
-        DEMO_PRODUCTS
-        if args.demo_retries
-        else NORMAL_PRODUCTS
-    )
+    if args.demo_errors:
+        products = ERROR_DEMO_PRODUCTS
+    elif args.demo_retries:
+        products = RETRY_DEMO_PRODUCTS
+    else:
+        products = NORMAL_PRODUCTS
 
     for i in range(args.count):
 

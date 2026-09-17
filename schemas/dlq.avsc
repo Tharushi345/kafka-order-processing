@@ -1,0 +1,35 @@
+{
+  "type": "record",
+  "name": "FailedOrder",
+  "namespace": "assignment.orders",
+  "fields": [
+    {
+      "name": "orderId",
+      "type": "string"
+    },
+    {
+      "name": "product",
+      "type": "string"
+    },
+    {
+      "name": "price",
+      "type": "float"
+    },
+    {
+      "name": "errorType",
+      "type": "string"
+    },
+    {
+      "name": "errorMessage",
+      "type": "string"
+    },
+    {
+      "name": "retryCount",
+      "type": "int"
+    },
+    {
+      "name": "failedAt",
+      "type": "string"
+    }
+  ]
+}
